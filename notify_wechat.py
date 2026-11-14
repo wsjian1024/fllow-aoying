@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime
 from decimal import Decimal
 import fcntl
 import json
@@ -20,7 +19,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from binance_copytrade import ACTION, ApiError, Client, DEFAULT_PORTFOLIO, TZ, dump, local_time, record_hash
+from binance_copytrade import ACTION, ApiError, Client, DEFAULT_PORTFOLIO, dump, local_time, record_hash
 
 
 class PushError(RuntimeError):
@@ -31,16 +30,18 @@ class PushError(RuntimeError):
 
 def load_config(path: Path) -> dict:
     raw = json.loads(path.read_text(encoding="utf-8"))
+    # Ignore retired settings in older deployment configs.
+    for key in ("reminder_enabled", "reminder_lead_hours", "window_hours"):
+        raw.pop(key, None)
     cfg = {"portfolio_id": DEFAULT_PORTFOLIO, "name": "熬鹰资本", "provider": "pushplus",
            "recipient_id": "my-wechat", "state_file": "state/wechat.sqlite3", "lookback_hours": 48,
            "max_catchup_days": 30, "max_pages": 100, "max_messages_per_run": 3,
-           "reminder_enabled": True, "reminder_lead_hours": 1,
            "pushplus": {}, "wxpusher": {}, **raw}
     if cfg["provider"] not in ("pushplus", "wxpusher"):
         raise ValueError("provider must be pushplus or wxpusher")
     if not isinstance(cfg["portfolio_id"], str) or not cfg["portfolio_id"].isdecimal():
         raise ValueError("portfolio_id must be a decimal STRING")
-    for key in ("lookback_hours", "max_catchup_days", "max_pages", "max_messages_per_run", "reminder_lead_hours"):
+    for key in ("lookback_hours", "max_catchup_days", "max_pages", "max_messages_per_run"):
         if not isinstance(cfg[key], (int, float)) or isinstance(cfg[key], bool) or cfg[key] <= 0:
             raise ValueError(f"{key} must be positive")
     for key in ("max_pages", "max_messages_per_run"):
@@ -48,9 +49,6 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"{key} must be an integer")
     if cfg["max_messages_per_run"] > 3:
         raise ValueError("max_messages_per_run must be <= 3")
-    cfg["window_hours"] = 48 if cfg["provider"] == "pushplus" else 24
-    if cfg["reminder_lead_hours"] >= cfg["window_hours"]:
-        raise ValueError("reminder lead must be shorter than activation window")
     if cfg["lookback_hours"] > cfg["max_catchup_days"] * 24:
         raise ValueError("lookback_hours exceeds max_catchup_days")
     cfg["state_file"] = str((path.resolve().parent / cfg["state_file"]).resolve())
@@ -126,26 +124,14 @@ class Store:
             raise ValueError("状态库属于其他组合或接收人；请为新配置使用另一个 state_file")
         with self.db:
             self.put("binding", binding)
+            # Retire queued reminders without changing trade progress or sent records.
+            self.db.execute("UPDATE outbox SET status='cancelled' WHERE kind='reminder' AND status IN ('pending','failed','unknown','sending')")
+            self.db.execute("DELETE FROM meta WHERE key IN ('activated_at','activation_count')")
 
     def enqueue(self, kind: str, key: str, title: str, content: str, now: float, expires=None):
         cursor = self.db.execute("INSERT OR IGNORE INTO outbox(kind,unique_key,title,content,created,expires_at) VALUES (?,?,?,?,?,?)",
                                  (kind, key, title, content, now, expires))
         return cursor.lastrowid if cursor.rowcount else None
-
-    def mark_active(self, now: float):
-        with self.db:
-            self.put("activated_at", now)
-            self.put("activation_count", 0)
-            self.db.execute("UPDATE outbox SET status='superseded' WHERE kind='reminder' AND status IN ('pending','failed')")
-
-    def reminder_due(self, cfg: dict, now: float) -> bool:
-        active = self.get("activated_at")
-        if not cfg["reminder_enabled"] or active is None:
-            return False
-        deadline = active + cfg["window_hours"] * 3600
-        if not deadline - cfg["reminder_lead_hours"] * 3600 <= now < deadline:
-            return False
-        return not self.db.execute("SELECT 1 FROM outbox WHERE unique_key=?", (f"reminder:{active}",)).fetchone()
 
     def ingest(self, cfg: dict, rows: list[dict], now: float) -> list[tuple[str, dict]]:
         first = not self.get("initialized", False)
@@ -194,25 +180,6 @@ def format_order(row: dict) -> str:
     return (f"{local_time(row['orderUpdateTime'])}\n{row['symbol']} {action}"
             f"\n数量 {number(row['executedQty'])}｜均价 {number(row['avgPrice'])}"
             f"\n操作盈亏 {number(row['totalPnl'])} USDT")
-
-
-def reminder_content(cfg: dict, orders: list[dict], positions: list[dict], now: float) -> str:
-    text = [f"{cfg['name']}｜激活窗口提醒", f"数据截至：{local_time(int(now * 1000))}"]
-    if cfg["provider"] == "pushplus":
-        text.append("公众号客服消息窗口即将结束，之后可能改用模板消息。请在公众号发送‘激活消息’；发送本摘要不能续期。")
-    else:
-        text.append("微信ClawBot激活窗口即将结束，请回复任意内容重新激活。每次激活最多10条，可能提前用完；发送本摘要不能续期。")
-    text.extend(["激活后请再次运行 --mark-active-now，使本地提醒时间与实际激活对齐。", "", "最近操作（本次查询窗口内）："])
-    text.extend(format_order(r) for r in sorted(orders, key=lambda r: r["orderUpdateTime"], reverse=True)[:3])
-    if not orders:
-        text.append("本次查询窗口内无操作。")
-    text.extend(["", "最近已平仓记录（不是当前实时持仓）："])
-    for row in sorted(positions, key=lambda r: r["closed"], reverse=True)[:3]:
-        text.append(f"{row['symbol']} {row['side']}｜{local_time(row['closed'])}｜仓位盈亏 {number(row['closingPnl'])} USDT")
-    if not positions:
-        text.append("接口未返回仓位历史。")
-    text.extend(["以上为最新快照，已推送过的操作不会算作新变化。", portfolio_url(cfg)])
-    return "\n".join(text)
 
 
 def push_position_history(store: Store, cfg: dict, client: Client, now: float,
@@ -307,13 +274,11 @@ class Sender:
 def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
              message_ids: list[int] | None = None) -> int:
     now = clock()
-    with store.db:
-        store.db.execute("UPDATE outbox SET status='expired' WHERE kind='reminder' AND status IN ('pending','failed') AND expires_at<=?", (now,))
     if message_ids == []:
         return 0
     scope = "" if message_ids is None else " AND id IN (" + ",".join("?" for _ in message_ids) + ")"
     parameters = [now, *(message_ids or []), cfg["max_messages_per_run"]]
-    messages = store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=?" + scope + " ORDER BY id LIMIT ?",
+    messages = store.db.execute("SELECT * FROM outbox WHERE status='pending' AND kind!='reminder' AND next_attempt<=?" + scope + " ORDER BY id LIMIT ?",
                                 parameters).fetchall()
     accepted = 0
     for message in messages:
@@ -322,28 +287,14 @@ def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
             with store.db:
                 store.db.execute("UPDATE outbox SET status='expired' WHERE id=?", (message["id"],))
             continue
-        if cfg["provider"] == "wxpusher":
-            active = store.get("activated_at")
-            count = store.get("activation_count", 0)
-            if active is None or not active <= now < active + 24 * 3600 or count >= 10:
-                print("微信ClawBot需要用户实际激活并运行 --mark-active-now；消息保留在待发送队列。", file=sys.stderr)
-                break
         with store.db:
             store.db.execute("UPDATE outbox SET status='sending',attempts=attempts+1 WHERE id=?", (message["id"],))
-            if cfg["provider"] == "wxpusher":
-                # Reserve BEFORE the network call: unknown results/crashes may consume a slot.
-                store.put("activation_count", store.get("activation_count", 0) + 1)
-        content = message["content"]
-        if cfg["provider"] == "wxpusher" and store.get("activation_count", 0) >= 8:
-            content += "\n本程序记录本轮接近10条额度，请在微信回复重新激活，并运行 --mark-active-now。"
         try:
-            receipt = sender.send(message["title"], content)
+            receipt = sender.send(message["title"], message["content"])
         except PushError as exc:
             attempts = message["attempts"] + 1
             status = "unknown" if exc.uncertain else ("failed" if attempts >= 5 else "pending")
             with store.db:
-                if cfg["provider"] == "wxpusher" and not exc.uncertain:
-                    store.put("activation_count", max(0, store.get("activation_count", 0) - 1))
                 store.db.execute("UPDATE outbox SET status=?,error=?,next_attempt=? WHERE id=?",
                                  (status, str(exc), clock() + min(3600, 60 * 2 ** attempts), message["id"]))
             print(f"推送 {message['id']}: {status}，{exc}", file=sys.stderr)
@@ -353,8 +304,6 @@ def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
             store.db.execute("UPDATE outbox SET status='accepted',receipt=?,accepted_at=?,error=NULL WHERE id=?",
                              (receipt, accepted_at, message["id"]))
             store.put("last_accepted_at", accepted_at)
-            if cfg["provider"] != "wxpusher":
-                store.put("activation_count", store.get("activation_count", 0) + 1)
         accepted += 1
         print(f"推送 {message['id']}: 服务已受理（不代表微信已送达）")
     return accepted
@@ -376,16 +325,6 @@ def process(store: Store, cfg: dict, client: Client, now: float, *, dry_run: boo
     first = not store.get("initialized", False)
     orders = collect(store, cfg, client, now)
     changes = store.ingest(cfg, orders, now)
-    if store.reminder_due(cfg, now):
-        try:
-            positions = client.history("positions", start=0, end=int(now * 1000), max_pages=cfg["max_pages"])["rows"]
-        except ApiError as exc:
-            print(f"摘要仓位读取失败，操作变化照常处理；下次重试摘要：{exc}", file=sys.stderr)
-        else:
-            active = store.get("activated_at")
-            with store.db:
-                store.enqueue("reminder", f"reminder:{active}", f"{cfg['name']}｜激活窗口提醒",
-                              reminder_content(cfg, orders, positions, now), now, active + cfg["window_hours"] * 3600)
     print(f"{'首次建立基线' if first else '采集完成'}：{len(orders)}条记录，{len(changes)}条新变化。")
     if first:
         print("现有历史已记为基线，不推送旧记录。")
@@ -397,12 +336,8 @@ def process(store: Store, cfg: dict, client: Client, now: float, *, dry_run: boo
 
 
 def status(store: Store, cfg: dict):
-    active = store.get("activated_at")
     print(dump({"initialized": store.get("initialized", False),
                 "last_fetch": local_time(int(store.get("last_fetch_at", 0) * 1000)) if store.get("last_fetch_at") else None,
-                "activation": local_time(int(active * 1000)) if active else None,
-                "activation_deadline": local_time(int((active + cfg["window_hours"] * 3600) * 1000)) if active else None,
-                "submitted_since_activation": store.get("activation_count", 0),
                 "outbox": {r[0]: r[1] for r in store.db.execute("SELECT status,count(*) FROM outbox GROUP BY status")},
                 "attention": [dict(r) for r in store.db.execute("SELECT id,kind,status,error FROM outbox WHERE status IN ('unknown','failed') ORDER BY id")]}))
 
@@ -414,18 +349,17 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--push-positions", nargs="?", const=10, type=int, metavar="N", help="手动推送最新 N 条仓位历史；默认10，0表示全部")
     mode.add_argument("--status", action="store_true", help="查看状态，不访问网络")
-    mode.add_argument("--mark-active-now", action="store_true", help="仅在你刚刚在微信完成激活后使用；本命令本身不能激活微信")
     mode.add_argument("--test-push", action="store_true", help="发送一条连接测试消息")
     mode.add_argument("--retry-message", type=int, metavar="ID", help="核对后允许重试一条 unknown/failed 消息；可能重复，下次正常运行发送")
     args = parser.parse_args()
     if args.push_positions is not None and args.push_positions < 0:
         parser.error("--push-positions 必须大于等于 0；0 表示全部")
-    if args.dry_run and (args.status or args.mark_active_now or args.test_push or args.retry_message is not None):
+    if args.dry_run and (args.status or args.test_push or args.retry_message is not None):
         parser.error("--dry-run 只支持默认采集或 --push-positions")
     os.umask(0o077)
     try:
         cfg = load_config(args.config)
-        if not any((args.dry_run, args.status, args.mark_active_now, args.retry_message is not None)):
+        if not any((args.dry_run, args.status, args.retry_message is not None)):
             validate_credentials(cfg)
         if args.dry_run or args.status:
             store = Store(cfg["state_file"], dry_run=True)
@@ -442,7 +376,7 @@ def main() -> int:
             return 0
         with single_run(cfg["state_file"]) as acquired:
             if not acquired:
-                if args.mark_active_now or args.retry_message is not None or args.test_push or args.push_positions is not None:
+                if args.retry_message is not None or args.test_push or args.push_positions is not None:
                     print("任务占用状态库，本次人工操作没有执行；请稍后重试。", file=sys.stderr)
                     return 1
                 print("上一次任务仍在执行，本次跳过。")
@@ -452,10 +386,6 @@ def main() -> int:
                 store.bind(cfg)
                 store.recover_inflight()
                 now = time.time()
-                if args.mark_active_now:
-                    store.mark_active(now)
-                    print("已记录你确认的微信激活时间；本操作没有发送消息或激活微信。")
-                    return 0
                 if args.retry_message is not None:
                     with store.db:
                         result = store.db.execute("UPDATE outbox SET status='pending',attempts=0,next_attempt=0 WHERE id=? AND status IN ('unknown','failed')", (args.retry_message,))

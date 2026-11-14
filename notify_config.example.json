@@ -8,8 +8,6 @@
   "max_catchup_days": 30,
   "max_pages": 100,
   "max_messages_per_run": 3,
-  "reminder_enabled": true,
-  "reminder_lead_hours": 1,
   "pushplus": {
     "token": "",
     "token_env": "f31a510adcf64a9ca5e6234c75d03233"

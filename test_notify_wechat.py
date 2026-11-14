@@ -116,78 +116,83 @@ class NotifierTests(unittest.TestCase):
         self.store.recover_inflight()
         self.assertEqual(self.queued()[0]["status"], "unknown")
 
-    def test_reminder_once_per_actual_activation_and_no_send_renewal(self):
-        activation = self.now - 47 * 3600
-        self.store.mark_active(activation)
-        client = Mock()
-        client.history.return_value = {"rows": []}
-        process(self.store, self.cfg, client, self.now)
-        self.assertEqual(len(self.queued()), 1)
-        self.assertIn("不是当前实时持仓", self.queued()[0]["content"])
-        self.send(Mock(send=Mock(return_value="receipt")))
-        self.assertEqual(self.store.get("activated_at"), activation)
-        process(self.store, self.cfg, client, self.now + 60)
-        self.assertEqual(len(self.queued()), 1)
-        self.assertFalse(self.store.reminder_due(self.cfg, self.now + 3601))
-
-    def test_no_activation_means_no_invented_deadline(self):
-        self.assertFalse(self.store.reminder_due(self.cfg, self.now))
-
-    def test_position_failure_does_not_block_order_change(self):
+    def test_scheduled_collection_only_requests_orders_and_no_keepalive(self):
         self.store.ingest(self.cfg, [order()], self.now - 60)
-        self.store.mark_active(self.now - 47 * 3600)
-        client = Mock()
-        client.history.side_effect = [{"rows": [order(), order(2)]}, ApiError("positions unavailable")]
+        with self.store.db:
+            self.store.put("activated_at", self.now - 47 * 3600)
+        client = Mock(history=Mock(return_value={"rows": [order()]}))
+        sender = Mock(send=Mock(return_value="receipt"))
         process(self.store, self.cfg, client, self.now)
-        self.assertEqual([r["kind"] for r in self.queued()], ["changes"])
-        self.assertTrue(self.store.reminder_due(self.cfg, self.now))
-
-    def test_reactivation_supersedes_old_pending_reminder(self):
-        self.queue("old", "reminder", self.now + 600)
-        self.store.mark_active(self.now)
-        self.assertEqual(self.queued()[0]["status"], "superseded")
-
-    def test_expired_reminder_not_sent(self):
-        self.queue("old", "reminder", self.now - 1)
-        sender = Mock()
         self.send(sender)
         sender.send.assert_not_called()
-        self.assertEqual(self.queued()[0]["status"], "expired")
+        self.assertEqual(self.queued(), [])
+        client.history.assert_called_once()
+        self.assertEqual(client.history.call_args.args, ("orders",))
+        client.history.return_value = {"rows": [order(), order(2)]}
+        process(self.store, self.cfg, client, self.now + 60)
+        self.assertEqual([r["kind"] for r in self.queued()], ["changes"])
+        self.assertTrue(all(c.args == ("orders",) for c in client.history.call_args_list))
+        self.assertEqual(self.send(sender, self.now + 60), 1)
 
-    def test_wxpusher_unknown_result_reserves_tenth_slot(self):
-        self.cfg["provider"] = "wxpusher"
-        self.store.mark_active(self.now - 60)
+    def test_legacy_reminders_cancelled_without_resetting_trade_progress(self):
+        self.store.ingest(self.cfg, [order()], self.now)
+        self.queue("trade")
+        for state in ("pending", "failed", "unknown", "sending", "accepted"):
+            self.queue(state, "reminder", self.now + 600)
+            with self.store.db:
+                self.store.db.execute("UPDATE outbox SET status=? WHERE unique_key=?", (state, state))
         with self.store.db:
+            self.store.put("activated_at", self.now - 60)
             self.store.put("activation_count", 9)
-        self.queue("a")
-        self.queue("b")
-        sender = Mock()
-        sender.send.side_effect = PushError("timeout", uncertain=True)
-        self.send(sender)
-        self.send(sender, self.now + 60)
-        self.assertEqual(self.store.get("activation_count"), 10)
-        self.assertEqual(sender.send.call_count, 1)
+        self.store.bind(self.cfg)
+        self.store.bind(self.cfg)
+        self.assertEqual([r["status"] for r in self.queued()],
+                         ["pending", "cancelled", "cancelled", "cancelled", "cancelled", "accepted"])
+        self.assertIsNone(self.store.get("activated_at"))
+        self.assertIsNone(self.store.get("activation_count"))
+        self.assertTrue(self.store.get("initialized"))
+        self.assertEqual(self.store.get("last_fetch_at"), self.now)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM events").fetchone()[0], 1)
+        self.assertEqual(self.send(Mock(send=Mock(return_value="receipt"))), 1)
 
-    def test_wxpusher_definite_rejection_releases_reserved_slot(self):
-        self.cfg["provider"] = "wxpusher"
-        self.store.mark_active(self.now - 60)
-        self.queue()
+    def test_dispatch_never_sends_legacy_reminders_even_without_migration(self):
+        self.queue("old", "reminder", self.now + 600)
         sender = Mock()
-        sender.send.side_effect = PushError("rejected")
         self.send(sender)
-        self.assertEqual(self.store.get("activation_count"), 0)
+        dispatch(self.store, self.cfg, sender, clock=lambda: self.now,
+                 message_ids=[self.queued()[0]["id"]])
+        sender.send.assert_not_called()
+
+    def test_wxpusher_uses_provider_without_local_activation_gate(self):
+        self.cfg["provider"] = "wxpusher"
+        sender = Mock(send=Mock(return_value="receipt"))
+        self.queue("a")
+        self.assertEqual(self.send(sender), 1)
+        with self.store.db:
+            self.store.put("activated_at", self.now - 10 * 86400)
+            self.store.put("activation_count", 100)
+        self.queue("b")
+        self.assertEqual(self.send(sender), 1)
+        self.assertEqual(sender.send.call_args.args, ("测试标题", "测试内容"))
+
+    def test_old_config_reminder_settings_are_ignored(self):
+        config = Path(self.tmp.name) / "legacy.json"
+        config.write_text(json.dumps({"reminder_enabled": True, "reminder_lead_hours": -99,
+                                      "window_hours": 0}), encoding="utf-8")
+        loaded = load_config(config)
+        self.assertNotIn("reminder_enabled", loaded)
+        self.assertNotIn("reminder_lead_hours", loaded)
+        self.assertNotIn("window_hours", loaded)
 
     def test_dispatch_refreshes_clock_between_messages(self):
-        self.cfg["provider"] = "wxpusher"
-        self.store.mark_active(self.now - 24 * 3600 + 10)
         self.queue("a")
-        self.queue("b")
+        self.queue("b", expires=self.now + 10)
         sender = Mock(send=Mock(return_value="receipt"))
         times = iter([self.now, self.now, self.now + 20, self.now + 20])
         dispatch(self.store, self.cfg, sender, clock=lambda: next(times))
         self.assertEqual(sender.send.call_count, 1)
         self.assertEqual(self.queued()[0]["accepted_at"], self.now + 20)
-        self.assertEqual(self.queued()[1]["status"], "pending")
+        self.assertEqual(self.queued()[1]["status"], "expired")
 
     def test_dry_run_does_not_modify_disk_state(self):
         self.store.ingest(self.cfg, [order()], self.now)
@@ -208,9 +213,9 @@ class NotifierTests(unittest.TestCase):
 
     def test_manual_action_lock_conflict_is_failure(self):
         with single_run(self.cfg["state_file"]):
-            with patch("notify_wechat.load_config", return_value=self.cfg), patch("sys.argv", ["notify_wechat.py", "--mark-active-now"]):
+            with patch("notify_wechat.load_config", return_value=self.cfg), patch("sys.argv", ["notify_wechat.py", "--test-push"]):
                 self.assertEqual(main(), 1)
-        self.assertIsNone(self.store.get("activated_at"))
+        self.assertEqual(self.queued(), [])
 
     def test_receiver_binding_prevents_using_another_state(self):
         with self.assertRaises(ValueError):
