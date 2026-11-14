@@ -18,6 +18,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 from binance_copytrade import ACTION, ApiError, Client, DEFAULT_PORTFOLIO, TZ, dump, local_time, record_hash
 
@@ -127,8 +128,9 @@ class Store:
             self.put("binding", binding)
 
     def enqueue(self, kind: str, key: str, title: str, content: str, now: float, expires=None):
-        self.db.execute("INSERT OR IGNORE INTO outbox(kind,unique_key,title,content,created,expires_at) VALUES (?,?,?,?,?,?)",
-                        (kind, key, title, content, now, expires))
+        cursor = self.db.execute("INSERT OR IGNORE INTO outbox(kind,unique_key,title,content,created,expires_at) VALUES (?,?,?,?,?,?)",
+                                 (kind, key, title, content, now, expires))
+        return cursor.lastrowid if cursor.rowcount else None
 
     def mark_active(self, now: float):
         with self.db:
@@ -213,6 +215,46 @@ def reminder_content(cfg: dict, orders: list[dict], positions: list[dict], now: 
     return "\n".join(text)
 
 
+def push_position_history(store: Store, cfg: dict, client: Client, now: float,
+                          limit: int = 10, *, dry_run: bool = False) -> list[int]:
+    if limit < 0:
+        raise ValueError("仓位条数必须大于等于 0；0 表示全部")
+    result = client.history("positions", start=0, end=int(now * 1000), max_pages=cfg["max_pages"])
+    rows = sorted(result["rows"], key=lambda r: r["closed"], reverse=True)
+    selected = rows[:limit] if limit else rows
+    chunks = [selected[i:i + 10] for i in range(0, len(selected), 10)] or [[]]
+    messages = []
+    for index, chunk in enumerate(chunks, 1):
+        suffix = f"（{index}/{len(chunks)}）" if len(chunks) > 1 else ""
+        title = f"{cfg['name']}｜仓位历史{suffix}"
+        lines = [title, f"查询时间：{local_time(int(now * 1000))}",
+                 f"按平仓时间倒序，本次选取 {len(selected)} 条，接口共 {len(rows)} 条。",
+                 "历史仓位记录（非当前实时持仓）", ""]
+        for row in chunk:
+            side = {"Long": "做多", "Short": "做空"}.get(row["side"], row["side"])
+            state = {"All Closed": "全部平仓"}.get(row.get("status"), row.get("status", ""))
+            lines.extend([f"{row['symbol']} {side} {row['leverage']}x｜{state}",
+                          f"开仓：{local_time(row['opened'])}",
+                          f"平仓：{local_time(row['closed'])}",
+                          f"开仓均价 {number(row['avgCost'])}｜平仓均价 {number(row['avgClosePrice'])}",
+                          f"已平数量 {number(row['closedVolume'])}｜平仓盈亏 {number(row['closingPnl'])} USDT", ""])
+        if not rows:
+            lines.append("当前接口没有返回仓位历史。")
+        lines.append(portfolio_url(cfg))
+        messages.append((title, "\n".join(lines)))
+    if dry_run:
+        for title, content in messages:
+            print(f"\n[仓位历史预览] {title}\n{content}")
+        print("dry-run：未向微信发送，未修改磁盘状态。")
+        return []
+    batch = uuid.uuid4().hex
+    with store.db:
+        ids = [store.enqueue("positions", f"positions:{batch}:{i}", title, content, now)
+               for i, (title, content) in enumerate(messages)]
+    print(f"仓位历史已入队：{len(selected)}/{len(rows)} 条记录，{len(ids)} 条消息。")
+    return ids
+
+
 class Sender:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -262,12 +304,17 @@ class Sender:
             raise PushError("推送返回无法解析，是否受理未知", uncertain=True) from None
 
 
-def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time) -> int:
+def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
+             message_ids: list[int] | None = None) -> int:
     now = clock()
     with store.db:
         store.db.execute("UPDATE outbox SET status='expired' WHERE kind='reminder' AND status IN ('pending','failed') AND expires_at<=?", (now,))
-    messages = store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? ORDER BY id LIMIT ?",
-                                (now, cfg["max_messages_per_run"])).fetchall()
+    if message_ids == []:
+        return 0
+    scope = "" if message_ids is None else " AND id IN (" + ",".join("?" for _ in message_ids) + ")"
+    parameters = [now, *(message_ids or []), cfg["max_messages_per_run"]]
+    messages = store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=?" + scope + " ORDER BY id LIMIT ?",
+                                parameters).fetchall()
     accepted = 0
     for message in messages:
         now = clock()
@@ -363,13 +410,18 @@ def status(store: Store, cfg: dict):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("notify_config.json"))
+    parser.add_argument("--dry-run", action="store_true", help="读取真实数据并预览，不发送、不写入状态；可与 --push-positions 组合")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="读取真实数据并预览，不发送、不写入状态")
+    mode.add_argument("--push-positions", nargs="?", const=10, type=int, metavar="N", help="手动推送最新 N 条仓位历史；默认10，0表示全部")
     mode.add_argument("--status", action="store_true", help="查看状态，不访问网络")
     mode.add_argument("--mark-active-now", action="store_true", help="仅在你刚刚在微信完成激活后使用；本命令本身不能激活微信")
     mode.add_argument("--test-push", action="store_true", help="发送一条连接测试消息")
     mode.add_argument("--retry-message", type=int, metavar="ID", help="核对后允许重试一条 unknown/failed 消息；可能重复，下次正常运行发送")
     args = parser.parse_args()
+    if args.push_positions is not None and args.push_positions < 0:
+        parser.error("--push-positions 必须大于等于 0；0 表示全部")
+    if args.dry_run and (args.status or args.mark_active_now or args.test_push or args.retry_message is not None):
+        parser.error("--dry-run 只支持默认采集或 --push-positions")
     os.umask(0o077)
     try:
         cfg = load_config(args.config)
@@ -381,6 +433,8 @@ def main() -> int:
                 store.bind(cfg)
                 if args.status:
                     status(store, cfg)
+                elif args.push_positions is not None:
+                    push_position_history(store, cfg, Client(cfg["portfolio_id"], quiet=True), time.time(), args.push_positions, dry_run=True)
                 else:
                     process(store, cfg, Client(cfg["portfolio_id"], quiet=True), time.time(), dry_run=True)
             finally:
@@ -388,7 +442,7 @@ def main() -> int:
             return 0
         with single_run(cfg["state_file"]) as acquired:
             if not acquired:
-                if args.mark_active_now or args.retry_message is not None or args.test_push:
+                if args.mark_active_now or args.retry_message is not None or args.test_push or args.push_positions is not None:
                     print("任务占用状态库，本次人工操作没有执行；请稍后重试。", file=sys.stderr)
                     return 1
                 print("上一次任务仍在执行，本次跳过。")
@@ -409,6 +463,13 @@ def main() -> int:
                         raise ValueError("消息不存在或状态不是 unknown/failed")
                     print("已重新加入队列；下次正常运行发送，可能与先前已受理消息重复。")
                     return 0
+                if args.push_positions is not None:
+                    ids = push_position_history(store, cfg, Client(cfg["portfolio_id"], quiet=True), now, args.push_positions)
+                    accepted = dispatch(store, cfg, Sender(cfg), message_ids=ids)
+                    print(f"本次仓位历史：{accepted}/{len(ids)} 条消息已受理。")
+                    if accepted < len(ids):
+                        print("其余消息保留在队列，可运行 --status 查看；待发送项由后续定时任务继续处理。")
+                    return 0 if accepted == len(ids) else 1
                 source_failed = False
                 if args.test_push:
                     with store.db:

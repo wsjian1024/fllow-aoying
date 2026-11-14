@@ -12,7 +12,7 @@
   "reminder_lead_hours": 1,
   "pushplus": {
     "token": "",
-    "token_env": "PUSHPLUS_TOKEN"
+    "token_env": "f31a510adcf64a9ca5e6234c75d03233"
   },
   "wxpusher": {
     "token": "",

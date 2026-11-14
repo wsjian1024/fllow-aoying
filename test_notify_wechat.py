@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from binance_copytrade import ApiError
-from notify_wechat import PushError, Sender, Store, collect, dispatch, load_config, main, process, single_run
+from notify_wechat import PushError, Sender, Store, collect, dispatch, load_config, main, process, push_position_history, single_run
 
 
 def order(i=1, qty="1.00000000"):
@@ -215,6 +215,57 @@ class NotifierTests(unittest.TestCase):
     def test_receiver_binding_prevents_using_another_state(self):
         with self.assertRaises(ValueError):
             self.store.bind({**self.cfg, "portfolio_id": "123"})
+
+    def position_client(self, count=12):
+        rows = [{"symbol": f"COIN{i}USDT", "side": "Long", "leverage": "10", "status": "All Closed",
+                 "opened": 1794500000000 + i, "closed": 1794590000000 + i,
+                 "avgCost": Decimal("100"), "avgClosePrice": Decimal("110"),
+                 "closedVolume": Decimal("2"), "closingPnl": Decimal("20")}
+                for i in range(count)]
+        return Mock(history=Mock(return_value={"rows": rows}))
+
+    def test_manual_positions_latest_ten_without_changing_baseline(self):
+        self.store.ingest(self.cfg, [order()], self.now - 60)
+        ids = push_position_history(self.store, self.cfg, self.position_client(), self.now)
+        self.assertEqual(len(ids), 1)
+        content = self.queued()[0]["content"]
+        self.assertIn("本次选取 10 条，接口共 12 条", content)
+        self.assertLess(content.index("COIN11USDT"), content.index("COIN2USDT"))
+        self.assertNotIn("COIN1USDT", content)
+        self.assertIn("非当前实时持仓", content)
+        self.assertIn("平仓盈亏 20 USDT", content)
+        self.assertEqual(self.store.get("last_fetch_at"), self.now - 60)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM events").fetchone()[0], 1)
+
+    def test_manual_positions_all_split_and_isolate_dispatch(self):
+        self.queue("unrelated")
+        ids = push_position_history(self.store, self.cfg, self.position_client(21), self.now, limit=0)
+        self.assertEqual(len(ids), 3)
+        sender = Mock(send=Mock(return_value="receipt"))
+        self.assertEqual(dispatch(self.store, self.cfg, sender, clock=lambda: self.now, message_ids=ids), 3)
+        self.assertEqual(self.queued()[0]["status"], "pending")
+        self.assertTrue(all(r["status"] == "accepted" for r in self.queued()[1:]))
+
+    def test_manual_positions_preview_does_not_enqueue(self):
+        with patch("builtins.print"):
+            self.assertEqual(push_position_history(self.store, self.cfg, self.position_client(), self.now, dry_run=True), [])
+        self.assertEqual(self.queued(), [])
+        self.assertIsNone(self.store.get("initialized"))
+
+    def test_manual_positions_fetch_failure_leaves_queue_unchanged(self):
+        client = Mock(history=Mock(side_effect=ApiError("busy")))
+        with self.assertRaises(ApiError):
+            push_position_history(self.store, self.cfg, client, self.now)
+        self.assertEqual(self.queued(), [])
+
+    def test_manual_positions_cli_preview_never_constructs_sender(self):
+        with patch("notify_wechat.load_config", return_value=self.cfg), \
+             patch("notify_wechat.Client", return_value=self.position_client()), \
+             patch("notify_wechat.Sender") as sender, patch("builtins.print"), \
+             patch("sys.argv", ["notify_wechat.py", "--push-positions", "5", "--dry-run"]):
+            self.assertEqual(main(), 0)
+        sender.assert_not_called()
+        self.assertEqual(self.queued(), [])
 
     def provider_response(self, payload):
         response = Mock()
