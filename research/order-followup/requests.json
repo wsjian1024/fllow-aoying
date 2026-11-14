@@ -1,0 +1,45 @@
+[
+  {
+    "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+    "method": "POST",
+    "body": {
+      "portfolioId": "5075281354358777856",
+      "pageNumber": 2,
+      "pageSize": 10,
+      "startTime": 1794067200000,
+      "endTime": 1794635208158
+    },
+    "httpStatus": 200,
+    "code": "000000",
+    "fetchedAt": "2026-11-14T05:46:48.520520+00:00",
+    "rawFile": "raw/001-order-history.json"
+  },
+  {
+    "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+    "method": "POST",
+    "body": {
+      "portfolioId": "5075281354358777856",
+      "pageNumber": 1,
+      "pageSize": 50,
+      "startTime": 1794067200000,
+      "endTime": 1794635208158
+    },
+    "httpStatus": 200,
+    "code": "000000",
+    "fetchedAt": "2026-11-14T05:46:52.029378+00:00",
+    "rawFile": "raw/002-order-history.json"
+  },
+  {
+    "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+    "method": "POST",
+    "body": {
+      "portfolioId": "5075281354358777856",
+      "pageNumber": 1,
+      "pageSize": 10
+    },
+    "httpStatus": 200,
+    "code": "000000",
+    "fetchedAt": "2026-11-14T05:46:55.518631+00:00",
+    "rawFile": "raw/003-order-history.json"
+  }
+]

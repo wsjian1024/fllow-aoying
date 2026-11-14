@@ -1,0 +1,62 @@
+{
+  "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+  "request": {
+    "portfolioId": "5075281354358777856",
+    "pageNumber": 1,
+    "pageSize": 10,
+    "startTime": 1794585600000,
+    "endTime": 1794634792849
+  },
+  "httpStatus": 200,
+  "response": {
+    "code": "000000",
+    "message": null,
+    "messageDetail": null,
+    "data": {
+      "indexValue": "1794589845563",
+      "total": 3,
+      "list": [
+        {
+          "symbol": "NVDAUSDT",
+          "baseAsset": "NVDA",
+          "quoteAsset": "USDT",
+          "side": "BUY",
+          "type": "LIMIT",
+          "positionSide": "LONG",
+          "executedQty": 1582.28,
+          "avgPrice": 162.7877509,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794595908267,
+          "orderTime": 1794595907728
+        },
+        {
+          "symbol": "NVDAUSDT",
+          "baseAsset": "NVDA",
+          "quoteAsset": "USDT",
+          "side": "BUY",
+          "type": "LIMIT",
+          "positionSide": "LONG",
+          "executedQty": 1624.71,
+          "avgPrice": 162.711251,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794595897751,
+          "orderTime": 1794595897750
+        },
+        {
+          "symbol": "SPCXUSDT",
+          "baseAsset": "SPCX",
+          "quoteAsset": "USDT",
+          "side": "BUY",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 1425.17,
+          "avgPrice": 139.0616454,
+          "totalPnl": 1770.95469957,
+          "orderUpdateTime": 1794589845563,
+          "orderTime": 1794589845563
+        }
+      ]
+    },
+    "success": true
+  }
+}

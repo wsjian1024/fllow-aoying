@@ -1,0 +1,22 @@
+{
+  "portfolio_id": "5075281354358777856",
+  "name": "熬鹰资本",
+  "provider": "pushplus",
+  "recipient_id": "my-wechat",
+  "state_file": "state/wechat.sqlite3",
+  "lookback_hours": 48,
+  "max_catchup_days": 30,
+  "max_pages": 100,
+  "max_messages_per_run": 3,
+  "reminder_enabled": true,
+  "reminder_lead_hours": 1,
+  "pushplus": {
+    "token": "",
+    "token_env": "PUSHPLUS_TOKEN"
+  },
+  "wxpusher": {
+    "token": "",
+    "token_env": "WXPUSHER_APP_TOKEN",
+    "uid": ""
+  }
+}

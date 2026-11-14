@@ -1,0 +1,25 @@
+{
+  "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+  "request": {
+    "portfolioId": "5075281354358777856",
+    "pageNumber": 1,
+    "pageSize": 50,
+    "startTime": 1794067200000,
+    "endTime": 1794634792849
+  },
+  "httpStatus": 200,
+  "response": {
+    "code": "11012005",
+    "message": "The system is currently busy. Please try again later.",
+    "messageDetail": {
+      "title": null,
+      "type": null,
+      "icon": null,
+      "action": null,
+      "linkTitle": null,
+      "linkUrl": null
+    },
+    "data": null,
+    "success": false
+  }
+}

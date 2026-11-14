@@ -1,0 +1,1 @@
+{"error":"Not Found","timestamp":1794634659316,"message":"No message available","status":404,"path":"/v3/public/future/copy-trade/lead-portfolio/detail"}

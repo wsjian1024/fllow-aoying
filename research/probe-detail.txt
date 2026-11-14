@@ -1,0 +1,1 @@
+{"message":"No message available","timestamp":1794634632481,"error":"Not Found","path":"/v1/public/future/copy-trade/lead-portfolio/detail","status":404}

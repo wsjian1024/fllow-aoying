@@ -1,0 +1,154 @@
+{
+  "url": "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history",
+  "request": {
+    "portfolioId": "5075281354358777856",
+    "pageNumber": 1,
+    "pageSize": 10,
+    "startTime": 1794067200000,
+    "endTime": 1794634792849,
+    "indexValue": "1794514186615"
+  },
+  "httpStatus": 200,
+  "response": {
+    "code": "000000",
+    "message": null,
+    "messageDetail": null,
+    "data": {
+      "indexValue": "1794382082050",
+      "total": 41,
+      "list": [
+        {
+          "symbol": "SPCXUSDT",
+          "baseAsset": "SPCX",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 712.09,
+          "avgPrice": 140.4022578,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794514182783,
+          "orderTime": 1794514182783
+        },
+        {
+          "symbol": "SPCXUSDT",
+          "baseAsset": "SPCX",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 356.76,
+          "avgPrice": 140.1105903,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794514177788,
+          "orderTime": 1794514177788
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 49.642,
+          "avgPrice": 1006.94511,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794415351842,
+          "orderTime": 1794415351842
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 49.37,
+          "avgPrice": 1012.66765,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794415198157,
+          "orderTime": 1794415198157
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 49.211,
+          "avgPrice": 1016.54005,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794415068218,
+          "orderTime": 1794415068218
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 48.999,
+          "avgPrice": 1020.26022,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794415021675,
+          "orderTime": 1794415021675
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 51.53,
+          "avgPrice": 969.94383,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794387445450,
+          "orderTime": 1794387445450
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 49.947,
+          "avgPrice": 1000.047,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794384083563,
+          "orderTime": 1794384083563
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 50.594,
+          "avgPrice": 988.23467,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794382098288,
+          "orderTime": 1794382098288
+        },
+        {
+          "symbol": "ZECUSDT",
+          "baseAsset": "ZEC",
+          "quoteAsset": "USDT",
+          "side": "SELL",
+          "type": "MARKET",
+          "positionSide": "SHORT",
+          "executedQty": 50.496,
+          "avgPrice": 989.99811,
+          "totalPnl": 0.0,
+          "orderUpdateTime": 1794382082050,
+          "orderTime": 1794382082050
+        }
+      ]
+    },
+    "success": true
+  }
+}

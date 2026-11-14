@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WxPusher 开发文档 | 消息推送 API、发送消息与多端触达</title>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+  <meta name="description" content="WxPusher 官方开发文档：通过 HTTP API 发送消息，接入微信消息推送、手机 Push 通知和电脑通知；涵盖 SPT、appToken、UID、Topic 群发、Webhook 回调与多端触达。">
+  <meta name="keywords" content="WxPusher,消息推送API,发送消息,微信消息推送,微信通知,推送助手,HTTP推送,Webhook通知,多端触达,群发消息,极简推送,SPT,appToken,UID,Topic,服务器告警">
+  <meta name="author" content="WxPusher">
+  <meta name="robots" content="index, follow">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="WxPusher 开发文档 | 消息推送 API 与接入指南">
+  <meta property="og:description" content="通过 WxPusher API 发送消息，实现微信、手机和电脑通知，支持 UID 单发、Topic 群发、SPT 与 Webhook 回调。">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://wxpusher.zjiecode.com/docs/">
+  <meta property="og:site_name" content="WxPusher">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:image" content="https://wxpusher.zjiecode.com/imgs/logo512.png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="WxPusher Logo">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="WxPusher 开发文档 | 消息推送 API 与接入指南">
+  <meta name="twitter:description" content="WxPusher 消息推送 API、发送消息、群发通知、Webhook 回调与多端触达接入指南。">
+  <meta name="twitter:image" content="https://wxpusher.zjiecode.com/imgs/logo512.png">
+  <meta name="twitter:image:alt" content="WxPusher Logo">
+
+  <link rel="canonical" href="https://wxpusher.zjiecode.com/docs/">
+  <link rel="alternate" hreflang="zh-CN" href="https://wxpusher.zjiecode.com/docs/">
+  <link rel="alternate" hreflang="x-default" href="https://wxpusher.zjiecode.com/docs/">
+
+  <meta name="referrer" content="no-referrer-when-downgrade">
+  <meta name="theme-color" content="#B300B3">
+  <meta name="format-detection" content="telephone=no">
+
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+
+  <link rel="stylesheet" href="css/vue.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "name": "WxPusher 开发文档",
+    "headline": "WxPusher 消息推送 API 与接入指南",
+    "description": "通过 WxPusher HTTP API 发送消息，实现微信消息推送、手机 Push、桌面通知、UID 单发、Topic 群发和 Webhook 回调。",
+    "url": "https://wxpusher.zjiecode.com/docs/",
+    "image": "https://wxpusher.zjiecode.com/docs/imgs/structure.png",
+    "inLanguage": "zh-CN",
+    "dateModified": "2026-10-10",
+    "isAccessibleForFree": true,
+    "author": {
+      "@type": "Organization",
+      "name": "WxPusher"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "WxPusher",
+      "url": "https://wxpusher.zjiecode.com/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <main style="max-width:900px;margin:0 auto;padding:40px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.75;color:#24292f;">
+      <h1>WxPusher 消息推送 API 与接入指南</h1>
+      <p>由 WxPusher 维护 · 最后更新：2026-10-10</p>
+      <p>WxPusher 是永久免费的实时消息推送服务。开发者可通过 HTTP API 把服务器告警、定时任务结果、CI/CD 状态和业务通知发送到 Android、iOS、HarmonyOS、macOS、Windows、Linux 或微信 ClawBot。</p>
+      <p>消息的 url 支持自定义 URL Scheme，可在 Android、iOS、鸿蒙 App 中打开第三方 App，也可设置点击通知直接打开，详见<a href="#/url-scheme">使用说明</a>。</p>
+      <h2>选择接入方式</h2>
+      <ul>
+        <li><a href="api-reference.html">标准推送 API</a>：使用 appToken，通过 UID 单发或 Topic 群发；适合业务系统，支持用户管理和回调。</li>
+        <li><a href="spt.html">极简推送 SPT</a>：无需创建应用，扫码获取 SPT 后即可发送；适合个人脚本给自己发送通知。</li>
+      </ul>
+      <h2>常用资源</h2>
+      <p><a href="openapi.yaml">OpenAPI 规范</a> · <a href="integrations.html">青龙面板与 MoviePilot 集成</a> · <a href="https://wxpusher.zjiecode.com/admin/">创建标准推送应用</a> · <a href="https://wxpusher.zjiecode.com/download/">下载全平台客户端</a> · <a href="https://github.com/wxpusher">查看开源客户端</a></p>
+      <h2>标准推送快速示例</h2>
+      <pre><code>curl -X POST https://wxpusher.zjiecode.com/api/send/message \
+  -H 'Content-Type: application/json' \
+  -d '{"appToken":"AT_xxx","content":"服务器告警","contentType":1,"uids":["UID_xxx"]}'</code></pre>
+      <p>完整字段、返回结构、限流和当前平台行为请以本页加载后的官方文档正文为准。</p>
+    </main>
+  </div>
+  <script>
+    window.$docsify = {
+      name: 'WxPusher消息推送平台',
+      nameLink: 'https://wxpusher.zjiecode.com/',
+      homepage: 'README.md',
+      repo: 'https://github.com/wxpusher',
+      plugins: [
+        function (hook) {
+          var footer = '<hr/><footer style="text-align:center;padding:16px 0;color:#888;font-size:13px;">' +
+            '<a href="https://beian.mps.gov.cn/#/query/webSearch?code=51019002009801" rel="noreferrer" target="_blank" style="color:#888;display:inline-flex;align-items:center;gap:4px;margin-right:18px;vertical-align:middle;"><img src="/imgs/wxpusher-gongan-beian.png" alt="公安备案" style="width:14px;height:16px;">川公网安备51019002009801号</a>' +
+            '<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" style="color:#888;vertical-align:middle;">蜀ICP备14025423号-1</a>' +
+            '</footer>';
+          hook.afterEach(function (html) {
+            return html + footer;
+          });
+        },
+      ],
+    }
+  </script>
+  <script src="js/docsify.min.js"></script>
+  <script src="js/zoom-image.min.js"></script>
+<script>
+!function(p){"use strict";!function(t){var s=window,e=document,i=p,c="".concat("https:"===e.location.protocol?"https://":"http://","sdk.51.la/js-sdk-pro.min.js"),n=e.createElement("script"),r=e.getElementsByTagName("script")[0];n.type="text/javascript",n.setAttribute("charset","UTF-8"),n.async=!0,n.src=c,n.id="LA_COLLECT",i.d=n;var o=function(){s.LA.ids.push(i)};s.LA?s.LA.ids&&o():(s.LA=p,s.LA.ids=[],o()),r.parentNode.insertBefore(n,r)}()}({id:"JNijCUM2VjlEMzbj",ck:"JNijCUM2VjlEMzbj"});
+</script>
+</body>
+</html>
