@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One cron invocation: collect changes, persist an outbox, submit WeChat notifications.
+"""One cron invocation: collect changes, persist an outbox, submit WeCom group-robot webhook notifications.
 
 Python 3.10+, standard library only, Linux/macOS. Provider acceptance is not delivery.
 """
@@ -22,6 +22,29 @@ import uuid
 from binance_copytrade import ACTION, ApiError, Client, DEFAULT_PORTFOLIO, dump, local_time, record_hash
 
 
+WECOM_WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key="
+# WeCom text messages accept at most 2048 UTF-8 bytes of content.
+WECOM_TEXT_LIMIT = 2048
+
+
+def utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def pack(entries: list, render, *, per_message: int = 10, limit: int = WECOM_TEXT_LIMIT) -> list[list]:
+    """Greedily group entries so each rendered message stays within the WeCom size limit."""
+    chunks, current = [], []
+    for entry in entries:
+        trial = current + [entry]
+        if current and (len(trial) > per_message or utf8_len(render(trial)) > limit):
+            chunks.append(current)
+            trial = [entry]
+        current = trial
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 class PushError(RuntimeError):
     def __init__(self, message: str, *, uncertain: bool = False):
         super().__init__(message)
@@ -33,12 +56,15 @@ def load_config(path: Path) -> dict:
     # Ignore retired settings in older deployment configs.
     for key in ("reminder_enabled", "reminder_lead_hours", "window_hours"):
         raw.pop(key, None)
-    cfg = {"portfolio_id": DEFAULT_PORTFOLIO, "name": "熬鹰资本", "provider": "pushplus",
+    # Only the WeCom group robot is supported; drop settings of retired providers.
+    for key in ("pushplus", "wxpusher"):
+        raw.pop(key, None)
+    cfg = {"portfolio_id": DEFAULT_PORTFOLIO, "name": "熬鹰资本", "provider": "wecom",
            "recipient_id": "my-wechat", "state_file": "state/wechat.sqlite3", "lookback_hours": 48,
            "max_catchup_days": 30, "max_pages": 100, "max_messages_per_run": 3,
-           "pushplus": {}, "wxpusher": {}, **raw}
-    if cfg["provider"] not in ("pushplus", "wxpusher"):
-        raise ValueError("provider must be pushplus or wxpusher")
+           "wecom": {}, **raw}
+    if cfg["provider"] != "wecom":
+        raise ValueError("provider must be wecom（仅支持企业微信群机器人 webhook）")
     if not isinstance(cfg["portfolio_id"], str) or not cfg["portfolio_id"].isdecimal():
         raise ValueError("portfolio_id must be a decimal STRING")
     for key in ("lookback_hours", "max_catchup_days", "max_pages", "max_messages_per_run"):
@@ -52,18 +78,24 @@ def load_config(path: Path) -> dict:
     if cfg["lookback_hours"] > cfg["max_catchup_days"] * 24:
         raise ValueError("lookback_hours exceeds max_catchup_days")
     cfg["state_file"] = str((path.resolve().parent / cfg["state_file"]).resolve())
-    section = cfg[cfg["provider"]]
-    env = section.get("token_env", "PUSHPLUS_TOKEN" if cfg["provider"] == "pushplus" else "WXPUSHER_APP_TOKEN")
-    cfg["token"] = os.environ.get(env) or section.get("token", "")
-    cfg["uid"] = os.environ.get("WXPUSHER_UID") or cfg["wxpusher"].get("uid", "")
+    section = cfg["wecom"]
+    if not isinstance(section, dict):
+        raise ValueError("wecom must be an object")
+    env = section.get("key_env") or "WECOM_WEBHOOK_KEY"
+    key = (os.environ.get(env) or section.get("key", "")).strip()
+    # Accept the full webhook URL copied from the robot settings as well as the bare key.
+    if key.startswith(WECOM_WEBHOOK):
+        key = key[len(WECOM_WEBHOOK):]
+    cfg["key"] = key
     return cfg
 
 
 def validate_credentials(cfg: dict):
-    if not cfg["token"] or "填写" in cfg["token"] or "xxx" in cfg["token"]:
-        raise ValueError("请在配置文件或指定环境变量中填写推送 token；--dry-run 无需凭据")
-    if cfg["provider"] == "wxpusher" and (not cfg["uid"].startswith("UID_") or "xxx" in cfg["uid"]):
-        raise ValueError("WxPusher 需要自己的 UID；--dry-run 无需凭据")
+    key = cfg["key"]
+    if not key or "填写" in key or "xxx" in key:
+        raise ValueError("请在配置文件或指定环境变量中填写企业微信机器人 webhook key；--dry-run 无需凭据")
+    if not all(c.isalnum() or c in "-_" for c in key):
+        raise ValueError("企业微信 webhook key 格式不正确；可填 key 或完整 webhook 地址")
 
 
 @contextmanager
@@ -117,10 +149,14 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, json.dumps(value)))
 
     def bind(self, cfg: dict):
-        # Token rotation is allowed. A different recipient must use a different recipient_id / DB.
-        binding = [cfg["portfolio_id"], cfg["provider"], cfg["recipient_id"], cfg["uid"] if cfg["provider"] == "wxpusher" else ""]
+        # Key rotation is allowed. A different recipient must use a different recipient_id / DB.
+        binding = [cfg["portfolio_id"], "wecom", cfg["recipient_id"], ""]
         old = self.get("binding")
-        if old is not None and old != binding:
+        # A state DB from the retired PushPlus/WxPusher providers keeps its progress when the
+        # portfolio and recipient_id stay the same; queued messages then go to the WeCom group.
+        migrated = (isinstance(old, list) and len(old) == 4 and old[1] in ("pushplus", "wxpusher")
+                    and old[0] == binding[0] and old[2] == binding[2])
+        if old is not None and old != binding and not migrated:
             raise ValueError("状态库属于其他组合或接收人；请为新配置使用另一个 state_file")
         with self.db:
             self.put("binding", binding)
@@ -148,14 +184,17 @@ class Store:
                 self.db.execute("INSERT INTO events VALUES (?,?,?,?)", (fingerprint, group, dump(row), now))
                 if not first:
                     changes.append(("记录更新" if known else "新操作", row))
-            for offset in range(0, len(changes), 10):
-                chunk = changes[offset:offset + 10]
+            def render(chunk):
                 title = f"{cfg['name']}｜{len(chunk)}条交易变化"
                 body = [title, f"采集时间：{local_time(int(now * 1000))}", ""]
                 for label, row in chunk:
                     body.extend([label + " · " + format_order(row), ""])
                 body.extend(["同毫秒订单缺少唯一ID，‘记录更新’为候选匹配。", portfolio_url(cfg)])
-                self.enqueue("changes", "changes:" + record_hash(chunk), title, "\n".join(body), now)
+                return "\n".join(body)
+
+            for chunk in pack(changes, render):
+                title = f"{cfg['name']}｜{len(chunk)}条交易变化"
+                self.enqueue("changes", "changes:" + record_hash(chunk), title, render(chunk), now)
             self.put("initialized", True)
             self.put("last_fetch_at", now)
         return changes
@@ -163,7 +202,7 @@ class Store:
     def recover_inflight(self):
         # A crash after sending but before recording the response is ambiguous; do not blindly resend.
         with self.db:
-            self.db.execute("UPDATE outbox SET status='unknown',error='上次发送过程中中断；请核对微信后决定是否重试' WHERE status='sending'")
+            self.db.execute("UPDATE outbox SET status='unknown',error='上次发送过程中中断；请核对企业微信群后决定是否重试' WHERE status='sending'")
 
 
 def portfolio_url(cfg: dict) -> str:
@@ -189,10 +228,8 @@ def push_position_history(store: Store, cfg: dict, client: Client, now: float,
     result = client.history("positions", start=0, end=int(now * 1000), max_pages=cfg["max_pages"])
     rows = sorted(result["rows"], key=lambda r: r["closed"], reverse=True)
     selected = rows[:limit] if limit else rows
-    chunks = [selected[i:i + 10] for i in range(0, len(selected), 10)] or [[]]
-    messages = []
-    for index, chunk in enumerate(chunks, 1):
-        suffix = f"（{index}/{len(chunks)}）" if len(chunks) > 1 else ""
+
+    def render(chunk, suffix="（99/99）"):
         title = f"{cfg['name']}｜仓位历史{suffix}"
         lines = [title, f"查询时间：{local_time(int(now * 1000))}",
                  f"按平仓时间倒序，本次选取 {len(selected)} 条，接口共 {len(rows)} 条。",
@@ -208,11 +245,16 @@ def push_position_history(store: Store, cfg: dict, client: Client, now: float,
         if not rows:
             lines.append("当前接口没有返回仓位历史。")
         lines.append(portfolio_url(cfg))
-        messages.append((title, "\n".join(lines)))
+        return title, "\n".join(lines)
+
+    # Size with the widest page suffix so the final "(i/n)" never pushes a message over the limit.
+    chunks = pack(selected, lambda chunk: render(chunk)[1]) or [[]]
+    messages = [render(chunk, f"（{index}/{len(chunks)}）" if len(chunks) > 1 else "")
+                for index, chunk in enumerate(chunks, 1)]
     if dry_run:
         for title, content in messages:
             print(f"\n[仓位历史预览] {title}\n{content}")
-        print("dry-run：未向微信发送，未修改磁盘状态。")
+        print("dry-run：未向企业微信发送，未修改磁盘状态。")
         return []
     batch = uuid.uuid4().hex
     with store.db:
@@ -227,15 +269,12 @@ class Sender:
         self.cfg = cfg
 
     def send(self, title: str, content: str) -> str:
-        cfg = self.cfg
-        if cfg["provider"] == "pushplus":
-            url = "https://www.pushplus.plus/send"
-            body = {"token": cfg["token"], "title": title, "content": content, "template": "txt", "channel": "wechat"}
-        else:
-            url = "https://wxpusher.zjiecode.com/api/send/message"
-            body = {"appToken": cfg["token"], "uids": [cfg["uid"]], "content": content,
-                    "contentType": 1, "summary": title[:100]}
-        req = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(),
+        text = content if content.startswith(title) else f"{title}\n{content}"
+        if utf8_len(text) > WECOM_TEXT_LIMIT:
+            raise PushError(f"消息超过企业微信 {WECOM_TEXT_LIMIT} 字节上限，未发送")
+        body = {"msgtype": "text", "text": {"content": text}}
+        req = urllib.request.Request(WECOM_WEBHOOK + self.cfg["key"],
+                                     data=json.dumps(body, ensure_ascii=False).encode(),
                                      headers={"Content-Type": "application/json", "User-Agent": "BinanceHistoryNotifier/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=20) as response:
@@ -246,29 +285,17 @@ class Sender:
             # A 5xx response might follow provider-side acceptance. Never assume it is safe to resend.
             raise PushError(f"推送 HTTP {exc.code}", uncertain=exc.code >= 500) from None
         except (urllib.error.URLError, TimeoutError, OSError):
-            raise PushError("推送网络响应未知，请核对微信或服务后台", uncertain=True) from None
+            raise PushError("推送网络响应未知，请核对企业微信群", uncertain=True) from None
         try:
             response = json.loads(raw)
-            if not isinstance(response, dict) or type(response.get("code")) is not int:
-                raise PushError("推送缺少明确业务结果，是否受理未知", uncertain=True)
-            if cfg["provider"] == "pushplus":
-                if response.get("code") != 200:
-                    raise PushError(f"PushPlus 拒绝，业务码 {response.get('code')}")
-                if not isinstance(response.get("data"), str) or not response["data"]:
-                    raise PushError("PushPlus 已受理但未返回有效流水号", uncertain=True)
-                return response["data"]
-            if response.get("code") != 1000:
-                raise PushError(f"WxPusher 拒绝，业务码 {response.get('code')}")
-            target = next((r for r in response.get("data", []) if r.get("uid") == cfg["uid"]), None)
-            if target is None:
-                raise PushError("WxPusher 未返回目标 UID 的结果", uncertain=True)
-            if type(target.get("code")) is not int:
-                raise PushError("WxPusher 目标缺少明确业务结果", uncertain=True)
-            if target.get("code") != 1000:
-                raise PushError(f"WxPusher 目标被拒绝，业务码 {target.get('code')}")
-            return str(target.get("messageContentId") or target.get("messageId") or "accepted")
-        except (ValueError, TypeError, AttributeError):
+        except ValueError:
             raise PushError("推送返回无法解析，是否受理未知", uncertain=True) from None
+        if not isinstance(response, dict) or type(response.get("errcode")) is not int:
+            raise PushError("推送缺少明确业务结果，是否受理未知", uncertain=True)
+        if response["errcode"] != 0:
+            # e.g. 45009 = over 20 messages/minute, 93000 = invalid webhook key.
+            raise PushError(f"企业微信拒绝，errcode {response['errcode']}：{response.get('errmsg', '')}")
+        return "ok"
 
 
 def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
@@ -305,7 +332,7 @@ def dispatch(store: Store, cfg: dict, sender: Sender, *, clock=time.time,
                              (receipt, accepted_at, message["id"]))
             store.put("last_accepted_at", accepted_at)
         accepted += 1
-        print(f"推送 {message['id']}: 服务已受理（不代表微信已送达）")
+        print(f"推送 {message['id']}: 企业微信已受理（不代表群成员已读）")
     return accepted
 
 
@@ -331,7 +358,7 @@ def process(store: Store, cfg: dict, client: Client, now: float, *, dry_run: boo
     if dry_run:
         for row in store.db.execute("SELECT title,content,status FROM outbox WHERE status IN ('pending','unknown','failed') ORDER BY id"):
             print(f"\n[预览/{row['status']}] {row['title']}\n{row['content']}")
-        print("dry-run：未向微信发送，未修改磁盘状态。")
+        print("dry-run：未向企业微信发送，未修改磁盘状态。")
     return len(changes)
 
 
@@ -403,7 +430,7 @@ def main() -> int:
                 source_failed = False
                 if args.test_push:
                     with store.db:
-                        store.enqueue("test", f"test:{now}", "Binance 微信连接测试", f"接收测试：{cfg['name']}\n时间：{local_time(int(now * 1000))}\n请确认微信实际收到；服务受理不等于送达。", now)
+                        store.enqueue("test", f"test:{now}", "Binance 企业微信连接测试", f"接收测试：{cfg['name']}\n时间：{local_time(int(now * 1000))}\n请确认企业微信群实际收到；接口受理不等于已读。", now)
                 else:
                     try:
                         process(store, cfg, Client(cfg["portfolio_id"], quiet=True), now)

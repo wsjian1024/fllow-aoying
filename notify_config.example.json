@@ -1,20 +1,15 @@
 {
   "portfolio_id": "5075281354358777856",
   "name": "熬鹰资本",
-  "provider": "pushplus",
+  "provider": "wecom",
   "recipient_id": "my-wechat",
   "state_file": "state/wechat.sqlite3",
   "lookback_hours": 48,
   "max_catchup_days": 30,
   "max_pages": 100,
   "max_messages_per_run": 3,
-  "pushplus": {
-    "token": "",
-    "token_env": "f31a510adcf64a9ca5e6234c75d03233"
-  },
-  "wxpusher": {
-    "token": "",
-    "token_env": "WXPUSHER_APP_TOKEN",
-    "uid": ""
+  "wecom": {
+    "key": "",
+    "key_env": "WECOM_WEBHOOK_KEY"
   }
 }
